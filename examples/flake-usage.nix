@@ -1,41 +1,37 @@
-# Example flake.nix that uses claude-cowork
-# This shows how to integrate Claude Cowork into your system flake
+# Example flake.nix that uses claude-for-linux
+# This shows how to integrate Claude Desktop into your system flake
 
 {
-  description = "My NixOS configuration with Claude Cowork";
+  description = "My NixOS configuration with Claude Desktop";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    # Add Claude Cowork flake
-    claude-cowork = {
+    claude-for-linux = {
       url = "github:heytcass/claude-for-linux";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    # If using Home Manager
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, claude-cowork, home-manager, ... }@inputs: {
-    # NixOS configuration
+  outputs = { self, nixpkgs, claude-for-linux, home-manager, ... }@inputs: {
+    # NixOS system configuration
     nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       specialArgs = { inherit inputs; };
       modules = [
         ./hardware-configuration.nix
 
-        # Import Claude Cowork module
-        claude-cowork.nixosModules.default
+        claude-for-linux.nixosModules.default
 
-        # Your configuration
         {
-          services.claude-cowork = {
+          programs.claude-desktop = {
             enable = true;
-            autoInstall = true;
+            fhs = true;  # FHS wrapper for Cowork + MCP compatibility
           };
         }
       ];
@@ -46,14 +42,12 @@
       pkgs = nixpkgs.legacyPackages.x86_64-linux;
       extraSpecialArgs = { inherit inputs; };
       modules = [
-        # Import Claude Cowork Home Manager module
-        claude-cowork.homeManagerModules.default
+        claude-for-linux.homeManagerModules.default
 
-        # Your configuration
         {
-          programs.claude-cowork = {
+          programs.claude-desktop = {
             enable = true;
-            installPatches = true;
+            fhs = true;
             createDesktopEntry = true;
           };
         }

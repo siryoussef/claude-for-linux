@@ -1,89 +1,60 @@
 # Cowork on Linux - Progress Report
 
-## 🎉 Major Achievement: Directory Picker Works!
+## Current Status: v1.1.2321 NixOS Package
 
-We successfully enabled Cowork (macOS-only feature) on Linux using bubblewrap sandboxing!
+Cowork (macOS-only sandboxed directory access) is being enabled on Linux using bubblewrap namespace sandboxing, packaged as a fully declarative Nix flake.
 
-## What We Accomplished
+### What Works
 
-### ✅ Fully Working
-1. **Cowork UI Integration**
-   - Toggle appears in settings
-   - Bypassed "Apple Silicon required" check
-   - UI loads and responds
+1. **Full Nix build pipeline**: DMG fetch, extract, patch, repack, electron wrap
+2. **All 7 patches apply cleanly** to v1.1.2321 minified code
+3. **Two package variants**: direct electron wrapper + FHS `buildFHSEnv`
+4. **NixOS + Home Manager modules** with `programs.claude-desktop.enable`
+5. **Cowork UI integration**: Toggle appears in settings
+6. **Platform routing**: Linux routed through TypeScript VM path (patch 02)
+7. **Availability check**: NH() returns "supported" for Linux (patch 03)
+8. **Bundle download skip**: TCe() short-circuits on Linux (patch 04)
+9. **VM start intercept**: ppt() creates bubblewrap session (patch 05)
+10. **Dynamic bwrap path**: Finds bubblewrap via `BWRAP_PATH` env, PATH lookup, or common locations
 
-2. **VM Initialization**
-   - Bubblewrap session creation working
-   - Session ID: UUID-based
-   - Session directories created in `/tmp/claude-cowork-sessions`
+### Status: Testing Needed
 
-3. **Critical UI Fix: Status Signaling**
-   - **THE BREAKTHROUGH**: UI was waiting for `AE(jf.Ready)` status
-   - Added status dispatch in $rt() early return
-   - UI now progresses past spinning wheel
+- **Cowork end-to-end**: Directory picker -> bubblewrap sandbox -> file operations
+- **stdin/stdout communication**: Known issue from v1.1.1200 (Proxy-based writeStdin)
+- **TypeScript VM path integration**: New in v1.1.2321, may provide cleaner IPC
 
-4. **Directory Picker**
-   - ✅ **WORKS!** Dialog appears when toggling Cowork on
-   - User can select directories
-   - 4 mounts configured: Downloads, .claude, .skills, uploads
+## Architecture (v1.1.2321)
 
-5. **Process Spawning**
-   - ✅ Processes spawn with bubblewrap sandboxing
-   - Isolation working (--unshare-pid, --unshare-ipc)
-   - Bind mounts configured correctly
-   - OAuth token handling (no-op)
-   - Event callbacks registered
+### Key Change from v1.1.1200
 
-### ⚠️ Partially Working
-- **Process Communication**: Spawns but can't send stdin
-- **Conversations**: Can start but hang waiting for process I/O
+v1.1.2321 introduced a **TypeScript VM client** (`h7e`) for Windows that communicates over IPC sockets. This is more Linux-friendly than the old macOS-only Swift approach.
 
-### ❌ Known Issues
-1. **stdin/stdout Communication**
-   - Process spawns successfully
-   - App tries to call `process.writeStdin()` but method not found
-   - Attempted fixes:
-     - Direct assignment to child process (doesn't stick)
-     - Object spreading wrapper (loses non-enumerable properties)
-     - Proxy delegation (current WIP)
+By setting the `sa` platform flag to include Linux (patch 02), we route through this TypeScript path instead of trying to load `@ant/claude-swift`.
 
-2. **Root Cause**
-   - Node.js ChildProcess objects may be sealed/frozen
-   - Can't add methods via simple assignment
-   - EventEmitter properties are non-enumerable
-   - Need proper delegation mechanism
+### Patch Chain (v1.1.2321)
 
-## Technical Architecture
+| # | File | Target | Purpose |
+|---|------|--------|---------|
+| 00 | `00-native-module-stub.js` | `@ant/claude-native` | Install Linux native module (Electron API stubs) |
+| 01 | `01-cowork-module-loader.js` | (append to index.js) | Load cowork module with process guard |
+| 02 | `02-platform-flag.js` | `sa=process.platform==="win32"` | Route Linux through TypeScript VM path |
+| 03 | `03-availability-check.js` | `NH()` | Return `{status:"supported"}` for Linux |
+| 04 | `04-skip-download.js` | `TCe(t,e)` | Skip macOS VM bundle download |
+| 05 | `05-vm-start-intercept.js` | `ppt(t,e,r,n)` | Create bubblewrap session, dispatch `W1(Ku.Ready)` |
+| 06 | `06-vm-getter.js` | `Ai()` + `fwe()` | Return Linux VM instance |
 
-### Patches Applied (v3-v11)
+### Pattern Mapping (v1.1.1200 -> v1.1.2321)
 
-#### v3: Module Loading
-- Loads `claude-cowork-linux` module with process guard
-- **Critical**: `if (process.type !== 'browser') return;`
-- Prevents renderer crashes
-
-#### v7: Availability Check
-- Patches `m6()` to return "supported" for Linux
-- Bypasses Apple Silicon requirement
-
-#### v8: VM Start Intercept ⭐
-- **Most critical patch**
-- Intercepts `$rt()` VM start function
-- Creates bubblewrap session
-- **Key fix**: Calls `AE(jf.Ready)` to signal UI
-- Returns mock vmInstance early (skips macOS logic)
-
-#### v9: Bundle Skip
-- Patches `B_e()` to skip 2.2GB macOS VM download
-- Returns `{ready: true}` immediately for Linux
-
-#### v10: VM Getter
-- Patches `vi()` to return our vmInstance
-- Enables Step 2/4 of VM startup to succeed
-
-#### v11: Swift Module
-- Patches Swift VM module loading with process guard
-- Returns fake module containing our vmInstance
+| Old (1200) | New (2321) | Purpose |
+|-----------|-----------|---------|
+| `m6()` | `NH()` | Platform/arch availability check |
+| `B_e(t,e)` | `TCe(t,e)` | VM bundle download |
+| `$rt(t,e,r)` | `ppt(t,e,r,n)` | VM start function |
+| `AE(jf.Ready)` | `W1(Ku.Ready)` | Status dispatch |
+| `vi()` | `Ai()` | Get VM instance |
+| `fS=(async()=>` | `uwe()` | Module loader |
+| N/A | `sa` | Win32 platform flag (now includes Linux) |
+| N/A | `h7e` | TypeScript VM client |
 
 ### Linux Implementation
 
@@ -92,126 +63,48 @@ We successfully enabled Cowork (macOS-only feature) on Linux using bubblewrap sa
 - `spawnSandboxed()`: Spawns processes with bubblewrap
 - `addMount()`: Configures bind mounts
 - `destroySession()`: Cleanup
+- Dynamic bwrap path: `BWRAP_PATH` env > PATH lookup > fallback locations
 
 **Bubblewrap Isolation**:
 ```bash
 bwrap \
-  --ro-bind /usr /usr \
-  --ro-bind /lib /lib \
-  --proc /proc \
-  --dev /dev \
-  --tmpfs /tmp \
+  --ro-bind /usr /usr --ro-bind /lib /lib \
+  --proc /proc --dev /dev --tmpfs /tmp \
   --bind /host/path /vm/path \
-  --unshare-pid \
-  --unshare-ipc \
-  --die-with-parent \
+  --unshare-pid --unshare-ipc --die-with-parent \
   command args
 ```
 
-## The Debugging Journey
-
-### Problem 1: UI Hung Forever ❌ → ✅
-**Symptom**: Spinning wheel on "Starting Claude's workspace..."
-**Diagnosis**: UI waiting for status signal that never came
-**Fix**: Added `AE(jf.Ready)` call after early return from `$rt()`
-**Result**: ✅ Directory picker appeared!
-
-### Problem 2: Missing VM Methods ❌ → ✅
-**Symptom**: `o.addApprovedOauthToken is not a function`
-**Diagnosis**: vmInstance missing required methods
-**Fix**: Added all methods found via grep:
-- spawn, exec, mkdir, readFile, writeFile, rm
-- addApprovedOauthToken, installSdk, stopVM, etc.
-**Result**: ✅ Process spawning works!
-
-### Problem 3: stdin Communication ❌ → ⚠️ WIP
-**Symptom**: `e.writeStdin is not a function`
-**Diagnosis**: App buffers stdin and flushes via writeStdin()
-**Attempted Fixes**:
-1. `child.writeStdin = (data) => {...}` - Doesn't stick
-2. `{...child, writeStdin: ...}` - Loses EventEmitter props
-3. `new Proxy(child, {...})` - Current attempt
-**Status**: ⚠️ Still debugging
-
 ## Key Learnings
 
-1. **Electron Process Types Matter**
-   - Main process (type='browser') vs renderer
-   - Code that accesses Node.js must have process guard
-   - Without guard: blank window crash
-
-2. **Status Signals Are Critical**
-   - UI state machine waits for specific signals
-   - `AE(jf.Ready)` tells UI "Cowork is ready"
-   - Without it: infinite spinning wheel
-
-3. **Installer Must Use Clean Slate**
-   - Extract from `app.asar.pre-cowork` (original)
-   - Not from `app.asar` (already patched)
-   - Otherwise patterns don't match
-
-4. **Method Whack-a-Mole**
-   - Search codebase for ALL method calls first
-   - Implement them all at once
-   - Saves time vs one-by-one debugging
-
-5. **Node.js ChildProcess Limitation**
-   - Can't add methods via assignment
-   - Non-enumerable properties don't spread
-   - Need Proxy or Object.defineProperty
-
-## Files Created/Modified
-
-**New Files**:
-- `scripts/install-cowork-v12.sh` - Installer with clean extraction
-- `scripts/patch-cowork-v8-intercept.js` - VM start intercept (THE KEY)
-- `scripts/patch-cowork-v9-skip-download.js` - Skip bundle download
-- `scripts/patch-cowork-v10-vi-function.js` - VM getter override
-- `scripts/patch-cowork-v11-swift-module.js` - Swift module fake
-- `test-cowork-status.sh` - Quick test script
-- `modules/claude-cowork-linux.js` - Already existed
-
-**Modified**:
-- `scripts/patch-cowork-v8-intercept.js` - Multiple iterations for methods
+1. **Electron process types**: Main (type='browser') vs renderer - only main can access Node.js
+2. **Status signals**: UI state machine waits for `W1(Ku.Ready)` - without it, infinite spinner
+3. **ChildProcess limitations**: Can't add methods via assignment - use Proxy
+4. **Minified code fragility**: Function names change between versions, patches must be rewritten
+5. **TypeScript VM path**: Windows IPC path in 1.1.2321 is more Linux-friendly than Swift
 
 ## Next Steps
 
-### To Fix stdin Communication
-1. Test Proxy approach (current)
-2. Try Object.defineProperty for writeStdin
-3. Create proper ProcessWrapper class
-4. Or patch the stdin buffering code itself
-
-### To Fully Enable Cowork
-1. Fix stdin/stdout communication
-2. Test actual file operations
-3. Verify sandbox isolation works
-4. Test with multiple directories
-5. Add error handling
-6. Make patches update-resistant
+1. Test Cowork end-to-end on NixOS with COSMIC desktop
+2. Investigate TypeScript VM client (`h7e`) as alternative to full VM mock
+3. Fix stdin/stdout communication for process I/O
+4. Test MCP servers with FHS variant
 
 ## Installation
 
 ```bash
-# Install
-bash scripts/install-cowork-v12.sh
+# Build
+nix build .
 
-# Test
-/opt/claude-desktop/claude-desktop.sh --no-sandbox
+# Run
+nix run .
 
-# Toggle Cowork on in Settings
-# Select a directory
-# Start a conversation with Cowork context
+# FHS variant (recommended for Cowork)
+nix run .#claude-desktop-fhs
 ```
-
-## Resources
-
-- Bubblewrap: https://github.com/containers/bubblewrap
-- Ralph Loop iterations documented in commit history
-- Test logs in `/tmp/cowork-*.log`
 
 ---
 
-**Session Date**: 2026-01-29
-**Status**: 🟡 Partially Working - Directory picker ✅, stdin communication ⚠️
-**Next Session**: Fix stdin communication to enable full Cowork functionality
+**Last Updated**: 2026-02-08
+**Claude Desktop Version**: 1.1.2321
+**Status**: Build pipeline complete, Cowork runtime testing needed

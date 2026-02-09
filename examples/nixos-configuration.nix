@@ -1,29 +1,17 @@
-# Example NixOS configuration with Claude Cowork
+# Example NixOS configuration with Claude Desktop
 # Add this to your /etc/nixos/configuration.nix
 
 { config, pkgs, ... }:
 
 {
-  # Import the Claude Cowork flake
-  # (Assumes you've added it to your flake inputs)
+  # Import the Claude Desktop flake module
+  # (Assumes you've added it to your flake inputs as "claude-for-linux")
   imports = [
-    inputs.claude-cowork.nixosModules.default
+    inputs.claude-for-linux.nixosModules.default
   ];
 
-  # Enable Claude Cowork
-  services.claude-cowork = {
+  programs.claude-desktop = {
     enable = true;
-    autoInstall = true;  # Automatically patch on system activation
+    fhs = true;  # Use FHS wrapper (recommended for Cowork + MCP)
   };
-
-  # Optional: Install Claude Desktop from Anthropic's deb package
-  # This requires downloading the .deb manually and converting it
-  environment.systemPackages = with pkgs; [
-    # ... your other packages ...
-
-    # If you've packaged Claude Desktop as a Nix package:
-    # claude-desktop
-
-    # Or use dpkg to install the .deb (not recommended for NixOS)
-  ];
 }

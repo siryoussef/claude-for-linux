@@ -1,37 +1,18 @@
-# Example Home Manager configuration with Claude Cowork
-# Add this to your home.nix or home-manager configuration
+# Example Home Manager configuration with Claude Desktop
+# Add this to your home.nix
 
 { config, pkgs, ... }:
 
 {
-  # Import the Claude Cowork flake
-  # (Assumes you've added it to your flake inputs)
+  # Import the Claude Desktop Home Manager module
+  # (Assumes you've added it to your flake inputs as "claude-for-linux")
   imports = [
-    inputs.claude-cowork.homeManagerModules.default
+    inputs.claude-for-linux.homeManagerModules.default
   ];
 
-  # Enable Claude Cowork
-  programs.claude-cowork = {
+  programs.claude-desktop = {
     enable = true;
-    installPatches = true;
-    createDesktopEntry = true;  # Creates desktop launcher
+    fhs = true;               # FHS wrapper (recommended for Cowork + MCP)
+    createDesktopEntry = true; # Creates XDG desktop launcher
   };
-
-  # Optional: Create custom shell alias
-  home.shellAliases = {
-    claude = "claude-desktop-cowork";
-  };
-
-  # Optional: Add to session startup
-  # systemd.user.services.claude-desktop = {
-  #   Unit = {
-  #     Description = "Claude Desktop with Cowork";
-  #     After = [ "graphical-session.target" ];
-  #   };
-  #   Service = {
-  #     ExecStart = "${pkgs.claude-desktop-cowork}/bin/claude-desktop-cowork";
-  #     Restart = "on-failure";
-  #   };
-  #   Install.WantedBy = [ "graphical-session.target" ];
-  # };
 }

@@ -4,39 +4,57 @@ Enabling macOS-only Claude Desktop features on Linux via runtime patching.
 
 ## Architecture
 
-- **Target**: Electron app at `/opt/claude-desktop/app.asar`
-- **Method**: Extract ASAR, patch minified JS, repack
-- **Installer**: `scripts/install-cowork-v12.sh` (requires sudo for /opt/ access)
+- **Source**: macOS DMG fetched via `fetchurl` (v1.1.2321)
+- **Extraction**: `dmg2img` + `7z` + `asar_tool.py`
+- **Runtime**: `electron_37` from nixpkgs
+- **Packaging**: Nix flake with `makeWrapper` + `buildFHSEnv`
 
 ## Key Commands
 
 ```bash
-# Install patches (extracts from pre-cowork backup for clean slate)
-bash scripts/install-cowork-v12.sh
+# Build
+nix build .                     # Default (direct electron wrapper)
+nix build .#claude-desktop-fhs  # FHS wrapper (Cowork + MCP)
+nix build .#claude-app          # Just the patched app.asar
 
-# Launch for testing
-/opt/claude-desktop/claude-desktop.sh --no-sandbox 2>&1 | grep -E "Cowork|error"
+# Run
+nix run .
+nix run .#claude-desktop-fhs
 
-# Verify patch applied to extracted app
-node -e "const fs=require('fs'); const c=fs.readFileSync('/tmp/app-extracted/.vite/build/index.js','utf8'); console.log(c.includes('SEARCH_PATTERN') ? 'FOUND' : 'NOT FOUND');"
+# Validate
+nix flake check
 
-# Search minified code for patterns
-grep -o ".\{0,50\}PATTERN.\{0,50\}" /tmp/app-extracted/.vite/build/index.js | head -5
+# Dev shell
+nix develop
 ```
 
 ## Patching Workflow
 
-1. **Always extract from backup**: Use `app.asar.pre-cowork` not `app.asar` (already patched)
-2. **Test patches on extracted app**: Before repacking, verify changes with grep/node
-3. **Search for all method calls**: `grep -o "vmInstance\.[a-zA-Z_]*" file.js | sort -u`
-4. **Process guards are critical**: `if (process.type !== 'browser') return;` prevents renderer crashes
+1. **Fetch DMG URL**: `curl -sI https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect | grep location`
+2. **Update hash**: `nix-prefetch-url <url>` then convert to SRI
+3. **Extract index.js**: Build with `-L` to see extraction, or use dev shell
+4. **Find patterns**: `grep -oP '.{0,50}PATTERN.{0,50}' index.js`
+5. **Update patches**: Edit `scripts/patches-2321/*.js`
+6. **Test**: `nix build . && nix run .`
+
+## Patch Chain (v1.1.2321)
+
+| # | File | Target | Purpose |
+|---|------|--------|---------|
+| 00 | native-module-stub | `@ant/claude-native` | Electron API stubs for Linux |
+| 01 | cowork-module-loader | (append) | Load bubblewrap module with process guard |
+| 02 | platform-flag | `sa=process.platform==="win32"` | Route Linux through TS VM path |
+| 03 | availability-check | `NH()` | Return supported for Linux |
+| 04 | skip-download | `TCe(t,e)` | Skip macOS VM bundle download |
+| 05 | vm-start-intercept | `ppt(t,e,r,n)` | Create bubblewrap session, dispatch Ready |
+| 06 | vm-getter | `Ai()` + `fwe()` | Return Linux VM instance |
 
 ## Electron Gotchas
 
 - **Process types**: Main (type='browser') vs renderer - only main can access Node.js
-- **ASAR tool**: Use `/opt/claude-desktop/asar_tool.py` not `npx asar` (has bugs)
-- **App caching**: Kill all processes with `pkill -f claude-desktop` before testing new patches
-- **ChildProcess objects**: Can't add methods via assignment - use Proxy or Object.defineProperty
+- **ASAR tool**: Use `tools/asar_tool.py` not `npx asar` (has bugs)
+- **App caching**: Kill all processes with `pkill -f claude-desktop` before testing
+- **ChildProcess objects**: Can't add methods via assignment - use Proxy
 
 ## Current State
 

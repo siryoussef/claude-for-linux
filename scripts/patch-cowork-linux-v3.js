@@ -44,8 +44,12 @@ console.log(`✓ Read ${(originalSize / 1024 / 1024).toFixed(2)} MB\n`);
 
 // Step 3: Create backup
 console.log('[3/5] Creating backup...');
-fs.writeFileSync(INDEX_JS_PATH + '.v3-backup', indexContent);
-console.log('✓ Backup created: index.js.v3-backup\n');
+try {
+  fs.writeFileSync(INDEX_JS_PATH + '.v3-backup', indexContent);
+  console.log('✓ Backup created: index.js.v3-backup\n');
+} catch (e) {
+  console.log('⚠ Backup skipped (read-only filesystem)\n');
+}
 
 // Step 4: Apply patch with GUARD
 console.log('[4/5] Applying Cowork patch WITH process guard...\n');

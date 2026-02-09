@@ -11,7 +11,21 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 
 const COWORK_BASE_DIR = '/tmp/claude-cowork-sessions';
-const BWRAP_PATH = '/usr/bin/bwrap';
+
+// Dynamic bwrap path: env var > PATH lookup > common locations
+function findBwrap() {
+  if (process.env.BWRAP_PATH) return process.env.BWRAP_PATH;
+  try {
+    return execFileSync('which', ['bwrap'], { encoding: 'utf8' }).trim();
+  } catch (e) {
+    // Fallback to common locations
+    for (const p of ['/usr/bin/bwrap', '/run/current-system/sw/bin/bwrap']) {
+      if (fs.existsSync(p)) return p;
+    }
+    return 'bwrap'; // Last resort: hope it's in PATH at runtime
+  }
+}
+const BWRAP_PATH = findBwrap();
 
 /**
  * Session Manager - Tracks active Cowork sessions

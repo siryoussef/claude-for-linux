@@ -1,410 +1,236 @@
-# Claude Cowork for Linux - Nix Flake Guide
+# Claude Desktop for Linux - Nix Flake Guide
 
 [![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3?logo=nixos&logoColor=white)](https://github.com/heytcass/claude-for-linux)
 [![NixOS](https://img.shields.io/badge/NixOS-Module-blue?logo=nixos&logoColor=white)](./examples/nixos-configuration.nix)
 [![Home Manager](https://img.shields.io/badge/Home%20Manager-Module-green?logo=nixos&logoColor=white)](./examples/home-manager.nix)
 
-This project provides a Nix flake for declarative installation of Claude Desktop with Cowork support on Linux.
+Fully declarative Nix flake that builds Claude Desktop v1.1.2321 for Linux from the macOS DMG, applies runtime patches, and wraps with `electron_37` from nixpkgs.
 
 ## Quick Start
 
 ### Prerequisites
 
-1. Install Nix with flakes enabled:
+Nix with flakes enabled:
 ```bash
-# Install Nix
+# NixOS users: already have Nix
+# Others: install Nix
 sh <(curl -L https://nixos.org/nix/install) --daemon
 
 # Enable flakes (add to ~/.config/nix/nix.conf)
 experimental-features = nix-command flakes
 ```
 
-2. Install Claude Desktop (proprietary binary from Anthropic)
-
-### One-Command Install
+### Run Directly
 
 ```bash
-# Install Cowork patches
+# Basic variant
 nix run github:heytcass/claude-for-linux
 
-# Or from local directory
-nix run .
+# FHS variant (recommended for Cowork + MCP)
+nix run github:heytcass/claude-for-linux#claude-desktop-fhs
 ```
 
-### Launch Claude with Cowork
+### Install to Profile
 
 ```bash
-# Run with Nix wrapper (ensures bubblewrap is available)
-nix run .#run
-
-# Or use the system install
-claude-desktop-cowork
+nix profile install github:heytcass/claude-for-linux
 ```
 
 ## Installation Methods
 
-### Method 1: Standalone Install (Any Linux)
-
-Use the flake without modifying your system configuration:
+### Method 1: Standalone (Any Linux with Nix)
 
 ```bash
-# Install patches
+# Run directly (no installation needed)
 nix run github:heytcass/claude-for-linux
 
-# Add to your shell profile for easy launching
-nix profile install github:heytcass/claude-for-linux#wrapper
+# Or install to user profile
+nix profile install github:heytcass/claude-for-linux
 ```
 
 ### Method 2: NixOS System-Wide
 
-Add to your `/etc/nixos/configuration.nix`:
-
 ```nix
+# flake.nix
 {
-  inputs.claude-cowork.url = "github:heytcass/claude-for-linux";
+  inputs.claude-for-linux.url = "github:heytcass/claude-for-linux";
 
-  # In your configuration
-  imports = [ claude-cowork.nixosModules.default ];
-
-  services.claude-cowork = {
-    enable = true;
-    autoInstall = true;  # Auto-apply patches on system activation
+  outputs = { self, nixpkgs, claude-for-linux, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        claude-for-linux.nixosModules.default
+        {
+          programs.claude-desktop = {
+            enable = true;
+            fhs = true;   # Use FHS wrapper (default: true)
+          };
+        }
+      ];
+    };
   };
 }
-```
-
-Then rebuild:
-```bash
-sudo nixos-rebuild switch
 ```
 
 ### Method 3: Home Manager
 
-Add to your `home.nix`:
-
 ```nix
+# home.nix
 {
-  inputs.claude-cowork.url = "github:heytcass/claude-for-linux";
+  imports = [ claude-for-linux.homeManagerModules.default ];
 
-  # In your home configuration
-  imports = [ claude-cowork.homeManagerModules.default ];
-
-  programs.claude-cowork = {
+  programs.claude-desktop = {
     enable = true;
-    installPatches = true;
-    createDesktopEntry = true;  # Creates "Claude (Cowork)" launcher
+    fhs = true;               # FHS wrapper (default: true)
+    createDesktopEntry = true; # XDG desktop entry (default: true)
   };
 }
 ```
 
-Then apply:
-```bash
-home-manager switch
-```
+## Package Variants
+
+| Package | Description | Use Case |
+|---------|-------------|----------|
+| `claude-desktop` (default) | Direct electron wrapper | Simple usage, minimal deps |
+| `claude-desktop-fhs` | `buildFHSEnv` wrapper | Cowork, MCP servers, tools needing `/usr/bin` paths |
+| `claude-app` | Just the patched app.asar | Building custom wrappers |
+| `asar-tool` | Python ASAR extract/pack tool | Development |
+
+### FHS vs Direct
+
+The **FHS variant** (`claude-desktop-fhs`) wraps Claude in a `buildFHSEnv` environment with:
+- `/usr/bin/bwrap`, `/usr/bin/node`, `/usr/bin/python3` available
+- Standard library paths (`/lib`, `/usr/lib`)
+- Common tools: git, curl, docker-client, coreutils
+
+This is recommended when using Cowork (bubblewrap needs standard paths) or MCP servers that expect FHS layout.
+
+The **direct variant** (`claude-desktop`) runs electron directly with `makeWrapper`. It sets `BWRAP_PATH` and adds bubblewrap to `PATH`, but MCP servers may not find expected binaries.
 
 ## How It Works
 
-The Nix flake provides:
+### Build Pipeline
 
-1. **Reproducible Patching**: All patches are applied deterministically
-2. **Dependency Management**: Bubblewrap is automatically available
-3. **Clean Isolation**: No system-wide pollution
-4. **Declarative Config**: NixOS/Home Manager integration
+1. **Fetch**: Downloads macOS DMG via `fetchurl` (hash-verified)
+2. **Extract**: `dmg2img` + `7z` to get `app.asar` from the `.app` bundle
+3. **Unpack**: `asar_tool.py extract` to get raw JavaScript
+4. **Patch**: 7 Node.js scripts modify the minified code:
+   - `00`: Install Linux native module stub
+   - `01`: Load bubblewrap-based Cowork module
+   - `02`: Route Linux through TypeScript VM path (set `sa` flag)
+   - `03`: Return "supported" from availability check
+   - `04`: Skip macOS VM bundle download
+   - `05`: Intercept VM start - create bubblewrap session instead
+   - `06`: Override VM getter to return Linux instance
+5. **Repack**: `asar_tool.py pack` back into `app.asar`
+6. **Wrap**: `makeWrapper` with `electron_37`, flags, and environment
 
-### What Gets Installed
+### Key Architecture Decision
 
-- **Bubblewrap**: Linux sandboxing tool (replaces macOS VMs)
-- **Cowork Patches**: 6 JavaScript patches to the Electron app
-- **Cowork Module**: `claude-cowork-linux.js` for session management
-- **Wrapper Scripts**: Launch Claude with correct environment
+Claude Desktop 1.1.2321 has two VM paths:
+- **macOS**: `@ant/claude-swift` (Swift native module, requires macOS)
+- **Windows**: TypeScript VM client (`h7e`) over IPC sockets
 
-### Architecture
+By setting the `sa` platform flag to include Linux (patch 02), we route through the TypeScript path, which is more compatible with Linux. The VM start function (patch 05) then creates a bubblewrap session instead of connecting to a Windows IPC server.
 
+## Configuration Options
+
+### NixOS Module
+
+```nix
+programs.claude-desktop = {
+  enable = true;   # Install Claude Desktop
+  fhs = true;      # Use FHS wrapper (default: true)
+  package = ...;   # Override package (default: claude-desktop)
+};
 ```
-┌─────────────────────────────────────────┐
-│ Claude Desktop (Electron)               │
-│  ├── app.asar.pre-cowork (backup)       │
-│  └── app.asar (patched)                 │
-│      ├── Patch v3: Module loading       │
-│      ├── Patch v7: Availability check   │
-│      ├── Patch v8: VM start intercept   │
-│      ├── Patch v9: Skip bundle download │
-│      ├── Patch v10: VM getter           │
-│      └── Patch v11: Swift module stub   │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│ claude-cowork-linux (Node.js module)    │
-│  ├── CoworkSessionManager               │
-│  └── VMCompatibilityAdapter             │
-└─────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────┐
-│ Bubblewrap (Sandboxing)                 │
-│  ├── Process isolation                  │
-│  ├── Namespace separation               │
-│  └── Bind mounts for directories        │
-└─────────────────────────────────────────┘
+
+### Home Manager Module
+
+```nix
+programs.claude-desktop = {
+  enable = true;
+  fhs = true;               # Use FHS wrapper (default: true)
+  createDesktopEntry = true; # Create XDG desktop entry (default: true)
+  package = ...;             # Override package
+};
 ```
 
 ## Development
 
-### Enter Development Shell
+### Dev Shell
 
 ```bash
 nix develop
 ```
 
-This provides:
-- Node.js (for patching scripts)
-- Python 3 (for ASAR tool)
-- Bubblewrap (for sandboxing)
-- Development tools (eslint, prettier)
+Provides: nodejs, python3, bubblewrap, electron_37, dmg2img, p7zip, prettier
 
-### Build Individual Components
+### Building
 
 ```bash
-# Build just the patches
-nix build .#patches
-
-# Build the Cowork module
-nix build .#module
-
-# Build the ASAR tool
-nix build .#asar-tool
-
-# Build the installer
-nix build .#installer
+nix build .                     # Default (claude-desktop)
+nix build .#claude-desktop      # Direct wrapper
+nix build .#claude-desktop-fhs  # FHS wrapper
+nix build .#claude-app          # Just the patched app.asar
+nix flake check                 # Validate structure
 ```
 
-### Test Installation
+### Testing
 
 ```bash
-# Install patches
-nix run .
-
 # Launch and check logs
-nix run .#run 2>&1 | grep -E "Cowork|error"
+nix run . 2>&1 | grep -E "Cowork|error"
+
+# Expected output:
+# [Cowork] Linux Cowork enabled via bubblewrap
+# [Cowork] Bubblewrap available: bubblewrap 0.11.0
 ```
 
-## Updating
+### Updating to New Versions
 
-### Update Flake Inputs
+When Claude Desktop updates, the minified function names change. To update patches:
 
-```bash
-nix flake update
-```
-
-### Update Patches
-
-1. Modify patch scripts in `scripts/`
-2. Test: `nix run .`
-3. Commit changes
-4. Flake automatically uses new versions
-
-### Rollback
-
-```bash
-# NixOS
-sudo nixos-rebuild switch --rollback
-
-# Home Manager
-home-manager generations  # List generations
-home-manager switch --switch-generation <number>
-
-# Manual
-sudo cp /opt/claude-desktop/app.asar.pre-cowork /opt/claude-desktop/app.asar
-```
-
-## Comparison: Nix vs Ubuntu Install
-
-| Feature | Nix Flake | Ubuntu Script |
-|---------|-----------|---------------|
-| **Reproducibility** | ✅ Guaranteed | ⚠️ Depends on system state |
-| **Dependencies** | ✅ Auto-managed | ❌ Manual `nala install` |
-| **Rollback** | ✅ Built-in | ❌ Manual backup restore |
-| **Multi-user** | ✅ Isolated profiles | ⚠️ System-wide only |
-| **Declarative** | ✅ Config as code | ❌ Imperative script |
-| **Update Safety** | ✅ Atomic updates | ⚠️ Can break mid-update |
-
-Both methods work! Use Nix if you:
-- Want declarative system management
-- Need reproducible builds
-- Use NixOS or Home Manager
-- Want easy rollbacks
-
-Use Ubuntu script if you:
-- Prefer traditional package management
-- Want simpler one-time setup
-- Don't use Nix ecosystem
+1. Get the new DMG URL: `curl -sI https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect | grep location`
+2. Update `claudeVersion` and `claudeDmgHash` in `flake.nix`
+3. Extract and search new index.js for equivalent patterns
+4. Update search strings in `scripts/patches-2321/*.js`
+5. Test: `nix build . && nix run .`
 
 ## Troubleshooting
 
-### Flake Doesn't Find Claude Desktop
+### Build Fails at DMG Extraction
 
 ```bash
-# Set custom installation path
-export CLAUDE_DIR="/path/to/claude-desktop"
-nix run .
+# Check if the DMG URL is still valid
+curl -sI "https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect"
 ```
 
-Or modify the flake to look in your custom location.
+### Wayland Issues
 
-### Patches Don't Apply
-
+The wrapper passes `--ozone-platform-hint=auto`. If you need to force Wayland:
 ```bash
-# Check if backup exists
-ls -la /opt/claude-desktop/app.asar*
-
-# Manually restore backup
-sudo cp /opt/claude-desktop/app.asar.pre-cowork /opt/claude-desktop/app.asar
-
-# Try again
-nix run .
+claude-desktop --ozone-platform=wayland
 ```
 
-### Bubblewrap Errors
+### Cowork Not Appearing
 
+Check that the patches applied:
 ```bash
-# Check bubblewrap availability
-nix shell nixpkgs#bubblewrap -c bwrap --version
-
-# Test sandboxing
-nix shell nixpkgs#bubblewrap -c bwrap \
-  --ro-bind /usr /usr \
-  --proc /proc \
-  --dev /dev \
-  --unshare-pid \
-  /usr/bin/echo "Sandbox works!"
+nix build .#claude-app -L 2>&1 | grep -E "Patch|applied|WARNING"
 ```
 
-### Cowork UI Doesn't Appear
+All patches should show "applied" with no "WARNING" lines.
 
-Check logs:
+### Bubblewrap Permission Errors
+
+On some systems, user namespaces may be restricted:
 ```bash
-nix run .#run 2>&1 | tee /tmp/claude-cowork.log
-grep -i cowork /tmp/claude-cowork.log
+# Check kernel setting
+sysctl kernel.unprivileged_userns_clone
+# Should be 1. If 0:
+sudo sysctl kernel.unprivileged_userns_clone=1
 ```
-
-Expected output:
-```
-[Cowork Linux] Session created: <uuid>
-[Cowork Linux] Dispatching Ready status to UI
-```
-
-## Advanced Usage
-
-### Custom Flake Overlays
-
-```nix
-# flake.nix
-{
-  outputs = { self, nixpkgs }:
-    let
-      # Customize bubblewrap version
-      pkgs = import nixpkgs {
-        overlays = [
-          (final: prev: {
-            bubblewrap = prev.bubblewrap.overrideAttrs (old: {
-              # Custom build flags, patches, etc.
-            });
-          })
-        ];
-      };
-    in {
-      # ... rest of flake
-    };
-}
-```
-
-### Pinning Versions
-
-```nix
-# flake.lock pins nixpkgs automatically
-# To use specific version:
-{
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-23.11";
-}
-```
-
-### Cross-System Support
-
-The flake supports multiple systems via `flake-utils`:
-- x86_64-linux
-- aarch64-linux
-- x86_64-darwin (for future macOS testing)
-- aarch64-darwin
-
-## Contributing
-
-1. Test changes:
-```bash
-nix flake check  # Validate flake
-nix run .        # Test install
-```
-
-2. Update documentation in `NIX_README.md`
-
-3. Submit PR with:
-   - Working flake
-   - Updated docs
-   - Test results
-
-## Resources
-
-- [Nix Flakes Reference](https://nixos.wiki/wiki/Flakes)
-- [Bubblewrap Documentation](https://github.com/containers/bubblewrap)
-- [ASAR Format Specification](https://github.com/electron/asar)
-- [Project Status](./COWORK_PROGRESS.md)
 
 ## License
 
-Same as the main project (see root LICENSE file).
-
-## Credits
-
-- Nix flake by Claude Code Ralph Loop iterations
-- Original Ubuntu install script and patches
-- Bubblewrap sandboxing approach
-- Cowork Linux implementation
-
----
-
-## Implementation Details
-
-This section provides technical details about the Nix flake implementation.
-
-### Architecture
-
-Multi-level declarative system:
-- **Standalone**: Quick `nix run` usage for testing
-- **NixOS**: System-wide service with activation scripts
-- **Home Manager**: User-level with desktop entries
-- **Dev Shell**: Full development environment with all tools
-
-### Components
-
-1. **flake.nix** - Main flake definition with packages, apps, and modules
-2. **scripts/asar_tool.py** - ASAR archive manipulation tool
-3. **test-nix-flake.sh** - Comprehensive test suite (10 automated tests)
-4. **examples/** - Configuration examples for NixOS and Home Manager
-
-### Benefits
-
-- ✅ **Reproducible builds** - Guaranteed determinism across machines
-- ✅ **Automatic dependency management** - No manual package installations
-- ✅ **Atomic rollbacks** - Built into Nix, easy version switching
-- ✅ **Multi-user isolation** - Per-user profiles without conflicts
-- ✅ **Configuration as code** - Declarative system management
-
-### Test Results
-
-All 10 tests pass:
-- ✅ Flake structure validation
-- ✅ Package builds (asar-tool, patches, module, installer, wrapper)
-- ✅ ASAR pack/extract functionality
-- ✅ Development shell environment
-- ✅ Flake metadata completeness
-
-Run tests: `./test-nix-flake.sh`
-
+Same as the main project. Claude Desktop is property of Anthropic.

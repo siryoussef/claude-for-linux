@@ -3,109 +3,131 @@
 [![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3?logo=nixos&logoColor=white)](https://github.com/heytcass/claude-for-linux)
 [![Platform](https://img.shields.io/badge/Platform-Linux-blue?logo=linux&logoColor=white)](https://github.com/heytcass/claude-for-linux)
 [![License](https://img.shields.io/badge/License-Personal%20Use-orange)](./LICENSE)
-[![Claude Desktop](https://img.shields.io/badge/Claude%20Desktop-v1.1.1200-purple)](https://claude.ai)
+[![Claude Desktop](https://img.shields.io/badge/Claude%20Desktop-v1.1.2321-purple)](https://claude.ai)
 [![Cowork](https://img.shields.io/badge/Cowork-Enabled-green)](./COWORK_PROGRESS.md)
 
-Native Claude Desktop implementation for Linux (Ubuntu 25.11) extracted from macOS build.
-
-## Status
-
-- ✅ **Working**: Claude Desktop running natively on Linux with Wayland support
-- ✅ **Claude Code**: Enabled and functional (v2.1.20)
-- ✅ **Window Decorations**: GNOME title bar working
-- ✅ **Cowork**: Directory picker working! (stdin communication WIP - see [COWORK_PROGRESS.md](./COWORK_PROGRESS.md))
-- ✅ **Nix Flake**: Declarative installation for NixOS/Home Manager users
+Fully declarative NixOS package for Claude Desktop on Linux with Cowork support. Extracts from the macOS DMG, patches for Linux compatibility, and wraps with Electron 37.
 
 ## Quick Start
 
-### Option 1: Ubuntu/Debian Install
+### NixOS / Nix (Recommended)
 
 ```bash
-# Install dependencies
-sudo nala install dmg2img p7zip-full python3 nodejs
-
-# Run the installer
-./scripts/install-claude-desktop.sh
-
-# Launch
-claude-desktop
-```
-
-### Option 2: Nix Flake (Recommended for NixOS/Home Manager users)
-
-```bash
-# Install with Nix flakes
+# Run directly
 nix run github:heytcass/claude-for-linux
 
-# Launch
-nix run github:heytcass/claude-for-linux#run
+# With FHS wrapper (better MCP + Cowork compatibility)
+nix run github:heytcass/claude-for-linux#claude-desktop-fhs
+
+# Install to profile
+nix profile install github:heytcass/claude-for-linux
 ```
 
-See [NIX_README.md](./NIX_README.md) for detailed Nix installation options including NixOS and Home Manager integration.
+### NixOS Module
+
+```nix
+# flake.nix
+{
+  inputs.claude-for-linux.url = "github:heytcass/claude-for-linux";
+
+  outputs = { self, nixpkgs, claude-for-linux, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        claude-for-linux.nixosModules.default
+        { programs.claude-desktop.enable = true; }
+      ];
+    };
+  };
+}
+```
+
+### Home Manager Module
+
+```nix
+{
+  imports = [ claude-for-linux.homeManagerModules.default ];
+  programs.claude-desktop = {
+    enable = true;
+    fhs = true;  # FHS wrapper for MCP compatibility
+  };
+}
+```
+
+See [NIX_README.md](./NIX_README.md) for detailed configuration options.
+
+### Ubuntu/Debian (Legacy)
+
+The `scripts/` directory contains older Ubuntu-specific scripts for Claude Desktop v1.1.1200. These target a pre-installed Electron app at `/opt/claude-desktop/`.
+
+## What Works
+
+- **Native Wayland** support (not XWayland) via `--ozone-platform-hint=auto`
+- **HiDPI scaling** (sharp rendering)
+- **Window decorations** with titlebar overlay
+- **Claude Code** tool execution
+- **File uploads and downloads**
+- **Full chat** functionality
+- **Cowork** directory picker and bubblewrap sandboxing (WIP - see [COWORK_PROGRESS.md](./COWORK_PROGRESS.md))
+
+## Architecture
+
+```
+macOS DMG (fetchurl)
+       |
+  dmg2img + 7z -> app.asar
+       |
+  asar_tool.py extract -> raw JS
+       |
+  7 patches:
+    00: Native module stub (@ant/claude-native)
+    01: Cowork module loader (claude-cowork-linux)
+    02: Platform flag (route Linux through TypeScript VM path)
+    03: Availability check (NH() returns supported)
+    04: Skip bundle download (TCe() short-circuit)
+    05: VM start intercept (ppt() -> bubblewrap session)
+    06: VM getter override (Ai() + fwe())
+       |
+  asar_tool.py pack -> patched app.asar
+       |
+  electron_37 + makeWrapper -> claude-desktop
+  buildFHSEnv -> claude-desktop-fhs
+```
 
 ## Project Structure
 
 ```
 .
-├── docs/                    # Documentation
-│   ├── START_HERE.md       # Quick start guide
-│   ├── COWORK_README.md    # Cowork documentation
-│   └── ...                 # Other docs
-├── scripts/                # Installation and update scripts
-│   ├── install-claude-desktop.sh
-│   ├── install-cowork-linux.sh  (broken)
-│   ├── update-claude-desktop.sh
-│   └── patch-cowork-linux-v2.js
-├── modules/                # Custom modules
-│   ├── enhanced-claude-native-stub.js
-│   └── claude-cowork-linux.js
-└── tools/                  # Utilities
-    └── asar_tool.py       # ASAR manipulation
+├── flake.nix                         # Full NixOS package definition
+├── modules/
+│   ├── claude-cowork-linux.js        # Bubblewrap session manager
+│   └── enhanced-claude-native-stub.js # Linux native module replacement
+├── scripts/
+│   ├── patches-2321/                 # Patches for v1.1.2321
+│   │   ├── 00-native-module-stub.js
+│   │   ├── 01-cowork-module-loader.js
+│   │   ├── 02-platform-flag.js
+│   │   ├── 03-availability-check.js
+│   │   ├── 04-skip-download.js
+│   │   ├── 05-vm-start-intercept.js
+│   │   └── 06-vm-getter.js
+│   ├── patch-cowork-*.js             # Legacy patches for v1.1.1200
+│   └── install-*.sh                  # Legacy Ubuntu install scripts
+├── tools/
+│   └── asar_tool.py                  # ASAR archive manipulation
+└── examples/                         # NixOS/Home Manager config examples
 ```
 
-## What Works
+## Development
 
-- ✅ Native Wayland support (not XWayland)
-- ✅ HiDPI scaling (sharp, not blurry)
-- ✅ Window decorations (GNOME title bar)
-- ✅ Claude Code tool execution
-- ✅ File uploads and downloads
-- ✅ Full chat functionality
-- ✅ Automatic updates (via update script)
+```bash
+# Enter dev shell with all tools
+nix develop
 
-## What's Broken
-
-- ⚠️ **Cowork** (sandboxed directory access) - see `cowork` branch for attempted implementation
-
-## Installation
-
-Claude Desktop 1.1.1200 is installed at `/opt/claude-desktop/` with:
-- Enhanced native module stub (replaces macOS native module)
-- Electron 37.10.3 runtime
-- Wayland optimization flags
-- XDG directory compliance
-
-## Branches
-
-- `main` - Working Claude Desktop without Cowork
-- `cowork` - Cowork implementation (currently broken, needs debugging)
-
-## Documentation
-
-- **Quick Start**: `docs/START_HERE.md`
-- **Installation Guide**: `docs/COWORK_INSTALLATION.md`
-- **Technical Overview**: `docs/COWORK_SUMMARY.md`
-- **File Index**: `docs/COWORK_INDEX.md`
-
-## Contributing
-
-This is a personal project for running Claude Desktop on Linux. Contributions welcome!
-
-## Credits
-
-- **Implementation**: Extracted from Claude Desktop macOS build
-- **Cowork Research**: Ralph Loop iteration 1
-- **Tools**: Electron, Python ASAR manipulation
+# Build and test
+nix build .#claude-desktop      # Basic variant
+nix build .#claude-desktop-fhs  # FHS variant
+nix flake check                 # Validate structure
+```
 
 ## License
 

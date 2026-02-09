@@ -11,7 +11,7 @@ let indexContent = fs.readFileSync(INDEX_JS_PATH, 'utf8');
 const originalSize = indexContent.length;
 console.log('Size: ' + (originalSize / 1024 / 1024).toFixed(2) + ' MB\n');
 
-fs.writeFileSync(INDEX_JS_PATH + '.v8-backup', indexContent);
+try { fs.writeFileSync(INDEX_JS_PATH + '.v8-backup', indexContent); } catch (e) { /* read-only fs */ }
 
 // Find and wrap the $rt VM start function
 // Original pattern: async function $rt(t,e,r){const n=O_(),i=Date.now(),a=ya();Oe.info(`[VM:start] Beginning startup

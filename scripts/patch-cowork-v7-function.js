@@ -11,7 +11,7 @@ let indexContent = fs.readFileSync(INDEX_JS_PATH, 'utf8');
 const originalSize = indexContent.length;
 console.log('Size: ' + (originalSize / 1024 / 1024).toFixed(2) + ' MB\n');
 
-fs.writeFileSync(INDEX_JS_PATH + '.v7-backup', indexContent);
+try { fs.writeFileSync(INDEX_JS_PATH + '.v7-backup', indexContent); } catch (e) { /* read-only fs */ }
 
 // Find and replace the m6() function check
 const original = 'function m6(){return process.platform!=="darwin"?{status:"unsupported",reason:"Darwin only"}:process.arch!=="arm64"?{status:"unsupported",reason:"arm64';

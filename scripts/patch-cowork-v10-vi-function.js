@@ -11,7 +11,7 @@ let indexContent = fs.readFileSync(INDEX_JS_PATH, 'utf8');
 const originalSize = indexContent.length;
 console.log('Size: ' + (originalSize / 1024 / 1024).toFixed(2) + ' MB\n');
 
-fs.writeFileSync(INDEX_JS_PATH + '.v10-backup', indexContent);
+try { fs.writeFileSync(INDEX_JS_PATH + '.v10-backup', indexContent); } catch (e) { /* read-only fs */ }
 
 // Patch the vi() function to return our Linux VM
 // Original: async function vi(){const t=await R_e();return(t==null?void 0:t.vm)??null}

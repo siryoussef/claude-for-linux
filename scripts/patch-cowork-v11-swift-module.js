@@ -8,7 +8,7 @@ const INDEX_JS_PATH = path.join(EXTRACTED_DIR, '.vite/build/index.js');
 console.log('=== Cowork V11: Replace Swift VM Module ===\n');
 
 let indexContent = fs.readFileSync(INDEX_JS_PATH, 'utf8');
-fs.writeFileSync(INDEX_JS_PATH + '.v11-backup', indexContent);
+try { fs.writeFileSync(INDEX_JS_PATH + '.v11-backup', indexContent); } catch (e) { /* read-only fs */ }
 
 // Instead of intercepting $rt, replace the Swift VM module loading
 // Original: fS=(async()=>{try{return Tf=(await import("@ant/claude-swift")).default
