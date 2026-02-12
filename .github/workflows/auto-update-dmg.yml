@@ -37,17 +37,22 @@ jobs:
           echo "Current version: $current_version"
 
           # Resolve latest DMG URL via redirect
+          REDIRECT_URL="https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect"
+          UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+          url_pattern='https://downloads\.claude\.ai/releases/darwin/universal/[0-9]+\.[0-9]+\.[0-9]+/[^[:space:]"'"'"']+'
           latest_url=""
           for attempt in 1 2 3; do
-            latest_url=$(curl -sL -o /dev/null -w "%{url_effective}" \
-              --max-time 15 --max-filesize 1 \
-              -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
-              "https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect" 2>/dev/null) || true
-
-            if [[ "$latest_url" =~ downloads\.claude\.ai/releases/darwin/universal/[0-9]+\.[0-9]+\.[0-9]+/ ]]; then
-              break
+            # Strategy 1: Parse Location header from 307 redirect
+            if [ -z "$latest_url" ]; then
+              headers=$(curl -s -o /dev/null -D - --max-time 15 -A "$UA" "$REDIRECT_URL" 2>/dev/null) || true
+              latest_url=$(echo "$headers" | grep -oP "(?i)location:\\s*\\K$url_pattern" | head -1) || true
             fi
-            latest_url=""
+            # Strategy 2: Follow redirect and capture effective URL
+            if [ -z "$latest_url" ]; then
+              effective=$(curl -sL -o /dev/null -w "%{url_effective}" --max-time 15 --max-filesize 1 -A "$UA" "$REDIRECT_URL" 2>/dev/null) || true
+              [[ "$effective" =~ $url_pattern ]] && latest_url="$effective"
+            fi
+            [ -n "$latest_url" ] && break
             [ "$attempt" -lt 3 ] && sleep $((attempt * 2))
           done
 

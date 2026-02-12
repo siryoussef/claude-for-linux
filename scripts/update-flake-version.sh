@@ -65,16 +65,32 @@ log "Current URL:     $current_url"
 # --- Resolve latest DMG URL via redirect ---
 log "Checking for latest version..."
 
+url_pattern='https://downloads\.claude\.ai/releases/darwin/universal/[0-9]+\.[0-9]+\.[0-9]+/[^[:space:]"'"'"']+'
 latest_url=""
-for attempt in 1 2 3; do
-  latest_url=$(curl -sL -o /dev/null -w "%{url_effective}" \
-    --max-time "$CURL_TIMEOUT" --max-filesize 1 \
-    -A "$USER_AGENT" "$REDIRECT_URL" 2>/dev/null) || true
 
-  if [[ "$latest_url" =~ downloads\.claude\.ai/releases/darwin/universal/[0-9]+\.[0-9]+\.[0-9]+/ ]]; then
+for attempt in 1 2 3; do
+  # Strategy 1: Parse Location header from the 307 redirect (no download needed)
+  if [ -z "$latest_url" ]; then
+    location_header=$(curl -s -o /dev/null -D - \
+      --max-time "$CURL_TIMEOUT" \
+      -A "$USER_AGENT" "$REDIRECT_URL" 2>/dev/null) || true
+    latest_url=$(echo "$location_header" | grep -oP "(?i)location:\\s*\\K$url_pattern" | head -1) || true
+  fi
+
+  # Strategy 2: Follow redirect and capture effective URL
+  if [ -z "$latest_url" ]; then
+    effective=$(curl -sL -o /dev/null -w "%{url_effective}" \
+      --max-time "$CURL_TIMEOUT" --max-filesize 1 \
+      -A "$USER_AGENT" "$REDIRECT_URL" 2>/dev/null) || true
+    if [[ "$effective" =~ $url_pattern ]]; then
+      latest_url="$effective"
+    fi
+  fi
+
+  if [ -n "$latest_url" ]; then
     break
   fi
-  latest_url=""
+
   if [ "$attempt" -lt 3 ]; then
     sleep_time=$((attempt * 2))
     warn "Attempt $attempt failed, retrying in ${sleep_time}s..."
