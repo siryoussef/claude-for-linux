@@ -1,0 +1,155 @@
+name: Auto-update Claude Desktop DMG
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force update even if version matches"
+        required: false
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-update:
+    runs-on: ubuntu-latest
+    outputs:
+      update_available: ${{ steps.check.outputs.update_available }}
+      current_version: ${{ steps.check.outputs.current_version }}
+      latest_version: ${{ steps.check.outputs.latest_version }}
+      latest_url: ${{ steps.check.outputs.latest_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for update
+        id: check
+        run: |
+          # Read current version from flake.nix
+          current_version=$(grep -oP 'claudeVersion = "\K[^"]+' flake.nix)
+          echo "current_version=$current_version" >> "$GITHUB_OUTPUT"
+          echo "Current version: $current_version"
+
+          # Resolve latest DMG URL via redirect
+          latest_url=""
+          for attempt in 1 2 3; do
+            latest_url=$(curl -sL -o /dev/null -w "%{url_effective}" \
+              --max-time 15 --max-filesize 1 \
+              -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+              "https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect" 2>/dev/null) || true
+
+            if [[ "$latest_url" =~ downloads\.claude\.ai/releases/darwin/universal/[0-9]+\.[0-9]+\.[0-9]+/ ]]; then
+              break
+            fi
+            latest_url=""
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 2))
+          done
+
+          if [ -z "$latest_url" ]; then
+            echo "::warning::Could not resolve latest DMG URL"
+            echo "update_available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest_version=$(echo "$latest_url" | grep -oP '/universal/\K[0-9]+\.[0-9]+\.[0-9]+')
+          echo "latest_version=$latest_version" >> "$GITHUB_OUTPUT"
+          echo "latest_url=$latest_url" >> "$GITHUB_OUTPUT"
+          echo "Latest version: $latest_version"
+          echo "Latest URL: $latest_url"
+
+          if [ "$current_version" = "$latest_version" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "Already up-to-date"
+            echo "update_available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Update available: $current_version -> $latest_version"
+            echo "update_available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  update-flake:
+    needs: check-update
+    if: needs.check-update.outputs.update_available == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Prefetch new DMG and compute hash
+        id: prefetch
+        env:
+          LATEST_URL: ${{ needs.check-update.outputs.latest_url }}
+          LATEST_VERSION: ${{ needs.check-update.outputs.latest_version }}
+        run: |
+          echo "Prefetching $LATEST_URL ..."
+          nix_hash=$(nix-prefetch-url --type sha256 "$LATEST_URL")
+          sri_hash=$(nix-hash --type sha256 --to-sri "$nix_hash")
+
+          echo "SRI hash: $sri_hash"
+          echo "sri_hash=$sri_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Update flake.nix
+        env:
+          LATEST_VERSION: ${{ needs.check-update.outputs.latest_version }}
+          LATEST_URL: ${{ needs.check-update.outputs.latest_url }}
+          SRI_HASH: ${{ steps.prefetch.outputs.sri_hash }}
+        run: |
+          dmg_filename=$(basename "$LATEST_URL")
+          new_url_template="https://downloads.claude.ai/releases/darwin/universal/\${claudeVersion}/$dmg_filename"
+
+          sed -i \
+            -e "s|claudeVersion = \"[^\"]*\"|claudeVersion = \"$LATEST_VERSION\"|" \
+            -e "s|claudeDmgHash = \"[^\"]*\"|claudeDmgHash = \"$SRI_HASH\"|" \
+            -e "s|claudeDmgUrl = \"[^\"]*\"|claudeDmgUrl = \"$new_url_template\"|" \
+            flake.nix
+
+          echo "Updated flake.nix:"
+          grep -E 'claude(Version|DmgHash|DmgUrl)' flake.nix
+
+      - name: Verify Nix evaluation
+        run: |
+          # Basic sanity check: the flake should still evaluate
+          nix flake show . 2>/dev/null || nix eval .#packages.x86_64-linux.default.name 2>/dev/null || true
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Update Claude Desktop DMG to v${{ needs.check-update.outputs.latest_version }}"
+          title: "Update Claude Desktop to v${{ needs.check-update.outputs.latest_version }}"
+          body: |
+            Automated update detected a new Claude Desktop release.
+
+            | Field | Value |
+            |-------|-------|
+            | **Old version** | `${{ needs.check-update.outputs.current_version }}` |
+            | **New version** | `${{ needs.check-update.outputs.latest_version }}` |
+            | **DMG URL** | `${{ needs.check-update.outputs.latest_url }}` |
+            | **SRI hash** | `${{ steps.prefetch.outputs.sri_hash }}` |
+
+            ## Checklist
+
+            - [ ] `nix build .` succeeds
+            - [ ] Application launches correctly
+            - [ ] Patches apply cleanly (check build logs)
+
+            > **Note**: Patches in `scripts/patches-2512/` target minified JS patterns
+            > that may change between versions. If the build fails, the patches likely
+            > need updating for the new version's code.
+
+            ---
+            *Created automatically by the auto-update workflow.*
+          branch: auto-update/claude-v${{ needs.check-update.outputs.latest_version }}
+          delete-branch: true
+          labels: |
+            automated
+            update
