@@ -36,33 +36,62 @@ jobs:
           echo "current_version=$current_version" >> "$GITHUB_OUTPUT"
           echo "Current version: $current_version"
 
-          # Resolve latest DMG URL via redirect
-          REDIRECT_URL="https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect"
-          UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-          url_pattern='https://downloads\.claude\.ai/releases/darwin/universal/[0-9]+\.[0-9]+\.[0-9]+/[^[:space:]"'"'"']+'
           latest_url=""
-          for attempt in 1 2 3; do
-            # Strategy 1: Parse Location header from 307 redirect
-            if [ -z "$latest_url" ]; then
-              headers=$(curl -s -o /dev/null -D - --max-time 15 -A "$UA" "$REDIRECT_URL" 2>/dev/null) || true
-              latest_url=$(echo "$headers" | grep -oP "(?i)location:\\s*\\K$url_pattern" | head -1) || true
-            fi
-            # Strategy 2: Follow redirect and capture effective URL
-            if [ -z "$latest_url" ]; then
-              effective=$(curl -sL -o /dev/null -w "%{url_effective}" --max-time 15 --max-filesize 1 -A "$UA" "$REDIRECT_URL" 2>/dev/null) || true
-              [[ "$effective" =~ $url_pattern ]] && latest_url="$effective"
-            fi
-            [ -n "$latest_url" ] && break
-            [ "$attempt" -lt 3 ] && sleep $((attempt * 2))
-          done
+          latest_version=""
+          UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
-          if [ -z "$latest_url" ]; then
-            echo "::warning::Could not resolve latest DMG URL"
-            echo "update_available=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # Strategy 1: CDN RELEASES.json (Squirrel update manifest, not behind Cloudflare)
+          echo "--- Strategy 1: CDN RELEASES.json ---"
+          releases_json=$(curl -sf --max-time 15 "https://downloads.claude.ai/releases/darwin/universal/RELEASES.json" 2>/dev/null) || true
+          if [ -n "$releases_json" ]; then
+            latest_version=$(echo "$releases_json" | jq -r '.currentRelease // empty')
+            zip_url=$(echo "$releases_json" | jq -r '.releases[0].updateTo.url // empty')
+            if [ -n "$latest_version" ] && [ -n "$zip_url" ]; then
+              # DMG uses same path and hash as the ZIP, just different extension
+              latest_url="${zip_url%.zip}.dmg"
+              echo "Resolved via RELEASES.json: $latest_version"
+            fi
           fi
 
-          latest_version=$(echo "$latest_url" | grep -oP '/universal/\K[0-9]+\.[0-9]+\.[0-9]+')
+          # Strategy 2: claude.ai JSON endpoint
+          if [ -z "$latest_url" ]; then
+            echo "--- Strategy 2: claude.ai JSON endpoint ---"
+            json_response=$(curl -sf --max-time 15 -A "$UA" "https://claude.ai/api/desktop/darwin/universal/dmg/latest" 2>/dev/null) || true
+            if [ -n "$json_response" ]; then
+              latest_version=$(echo "$json_response" | jq -r '.version // empty')
+              latest_url=$(echo "$json_response" | jq -r '.url // empty')
+              [ -n "$latest_url" ] && echo "Resolved via JSON endpoint: $latest_version"
+            fi
+          fi
+
+          # Strategy 3: claude.ai redirect (may be blocked by Cloudflare from CI)
+          if [ -z "$latest_url" ]; then
+            echo "--- Strategy 3: Redirect endpoint ---"
+            REDIRECT_URL="https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect"
+            url_pattern='https://downloads\.claude\.ai/releases/darwin/universal/[0-9]+\.[0-9]+\.[0-9]+/[^[:space:]"'"'"']+'
+            for attempt in 1 2 3; do
+              if [ -z "$latest_url" ]; then
+                headers=$(curl -s -o /dev/null -D - --max-time 15 -A "$UA" "$REDIRECT_URL" 2>/dev/null) || true
+                latest_url=$(echo "$headers" | grep -oP "(?i)location:\\s*\\K$url_pattern" | head -1) || true
+              fi
+              if [ -z "$latest_url" ]; then
+                effective=$(curl -sL -o /dev/null -w "%{url_effective}" --max-time 15 --max-filesize 1 -A "$UA" "$REDIRECT_URL" 2>/dev/null) || true
+                [[ "$effective" =~ $url_pattern ]] && latest_url="$effective"
+              fi
+              [ -n "$latest_url" ] && break
+              [ "$attempt" -lt 3 ] && sleep $((attempt * 2))
+            done
+            if [ -n "$latest_url" ]; then
+              latest_version=$(echo "$latest_url" | grep -oP '/universal/\K[0-9]+\.[0-9]+\.[0-9]+')
+              echo "Resolved via redirect: $latest_version"
+            fi
+          fi
+
+          if [ -z "$latest_url" ]; then
+            echo "::error::Could not resolve latest DMG URL via any strategy"
+            exit 1
+          fi
+
           echo "latest_version=$latest_version" >> "$GITHUB_OUTPUT"
           echo "latest_url=$latest_url" >> "$GITHUB_OUTPUT"
           echo "Latest version: $latest_version"
@@ -80,6 +109,9 @@ jobs:
     needs: check-update
     if: needs.check-update.outputs.update_available == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.create-pr.outputs.pull-request-number }}
+      pr_branch: ${{ steps.create-pr.outputs.pull-request-branch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,12 +152,8 @@ jobs:
           echo "Updated flake.nix:"
           grep -E 'claude(Version|DmgHash|DmgUrl)' flake.nix
 
-      - name: Verify Nix evaluation
-        run: |
-          # Basic sanity check: the flake should still evaluate
-          nix flake show . 2>/dev/null || nix eval .#packages.x86_64-linux.default.name 2>/dev/null || true
-
       - name: Create Pull Request
+        id: create-pr
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -141,15 +169,7 @@ jobs:
             | **DMG URL** | `${{ needs.check-update.outputs.latest_url }}` |
             | **SRI hash** | `${{ steps.prefetch.outputs.sri_hash }}` |
 
-            ## Checklist
-
-            - [ ] `nix build .` succeeds
-            - [ ] Application launches correctly
-            - [ ] Patches apply cleanly (check build logs)
-
-            > **Note**: Patches in `scripts/patches-2512/` target minified JS patterns
-            > that may change between versions. If the build fails, the patches likely
-            > need updating for the new version's code.
+            Build verification is running — see the `verify-build` job.
 
             ---
             *Created automatically by the auto-update workflow.*
@@ -158,3 +178,86 @@ jobs:
           labels: |
             automated
             update
+
+  verify-build:
+    needs: [check-update, update-flake]
+    if: needs.update-flake.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.update-flake.outputs.pr_branch }}
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: |
+          nix build . --print-build-logs 2>&1 | tee build-output.log
+          echo "build_ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR (build succeeded)
+        if: steps.build.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.update-flake.outputs.pr_number }}
+        run: |
+          cat > comment-body.md <<'COMMENT'
+          Build verified — `nix build .` succeeded. Patches apply cleanly to the new version.
+
+          - [x] `nix build .` succeeds
+          - [ ] Application launches correctly (manual check)
+          COMMENT
+          gh pr comment "$PR_NUMBER" --body-file comment-body.md
+
+      - name: Comment on PR (build failed)
+        if: steps.build.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.update-flake.outputs.pr_number }}
+          OLD_VERSION: ${{ needs.check-update.outputs.current_version }}
+          NEW_VERSION: ${{ needs.check-update.outputs.latest_version }}
+        run: |
+          patch_build="${NEW_VERSION##*.}"
+
+          # Build comment body safely — keeps build log out of heredoc interpolation
+          cat > comment-body.md <<COMMENT
+          @claude The automated version bump from v${OLD_VERSION} to v${NEW_VERSION} broke the build. The patches need updating for the new version's minified JavaScript.
+
+          ## Context
+
+          - Patches in \`scripts/patches-2685/\` target minified JS patterns from v${OLD_VERSION}
+          - The new v${NEW_VERSION} has different minified variable names and function signatures
+          - See \`CLAUDE.md\` for the full patch chain documentation and patching workflow
+
+          ## What to do
+
+          1. Copy \`scripts/patches-2685/\` to \`scripts/patches-${patch_build}/\` as a starting point
+          2. Run \`nix build .\` to see which patches fail
+          3. Use the dev shell (\`nix develop\`) to extract the new version's \`index.js\`
+          4. For each failing patch, find the equivalent pattern in the new JS and update the search/replace strings
+          5. Update the patch directory references in \`flake.nix\` (hardcoded as \`scripts/patches-2685/\`)
+          6. Verify \`nix build .\` succeeds
+
+          <details>
+          <summary>Build output (last 200 lines)</summary>
+
+          \`\`\`
+          COMMENT
+          # Append build log literally (no shell interpolation)
+          tail -200 build-output.log >> comment-body.md
+          cat >> comment-body.md <<'COMMENT'
+          ```
+
+          </details>
+          COMMENT
+          gh pr comment "$PR_NUMBER" --body-file comment-body.md
+
+          # Mark PR as draft since it needs work
+          gh pr ready "$PR_NUMBER" --undo || true
