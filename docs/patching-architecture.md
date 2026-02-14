@@ -1,16 +1,29 @@
 # Patching Architecture: Analysis and Automation Strategy
 
-This document describes the current patching approach in `claude-for-linux`, compares it with the regex-based approach used by [`claude-desktop-linux-flake`](https://github.com/heytcass/claude-desktop-linux-flake), and proposes a path toward automated, version-resilient patching.
+This document describes the patching approach in `claude-for-linux`, compares it with the regex-based approach used by [`claude-desktop-linux-flake`](https://github.com/heytcass/claude-desktop-linux-flake), and documents the path toward automated, version-resilient patching.
+
+## Current State
+
+**Option B (hybrid approach) has been implemented:**
+
+- 5 simple patches (02, 03, 04, 06, 08) converted to `perl -pe` regex with `\w+` wildcards
+- VM start (patch 05) uses dynamic Node.js discovery via `scripts/patch-vm-start.js`
+- Each regex patch verified with `grep -qP` post-check
+- Old `scripts/patches-XXXX/` directories removed
+- Standalone IIFEs extracted to `scripts/cowork-init.js` and `scripts/branding-fix.js`
+- New patch 09 added: DBus tray cleanup delay (from claude-desktop-linux-flake)
 
 ## The Problem
 
 Claude Desktop ships as a macOS DMG containing minified Electron JavaScript. Each release changes minified identifier names (e.g., `Li` becomes `Ci`, `vz()` becomes `fz()`), even when the underlying logic is unchanged. The current approach uses **exact string matching** to find and patch these identifiers, which breaks on every version bump and requires manual updates.
 
-## Current Approach (This Project)
+## Old Approach (Replaced)
 
-### How It Works
+The previous approach used exact string matching, described here for historical context.
 
-9 Node.js patch scripts in `scripts/patches-XXXX/` perform exact string find-and-replace on the extracted `index.js`:
+### How It Worked
+
+9 Node.js patch scripts in `scripts/patches-XXXX/` performed exact string find-and-replace on the extracted `index.js`:
 
 ```javascript
 // Patch 02: exact match — breaks when identifier changes

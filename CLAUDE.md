@@ -30,28 +30,30 @@ nix develop
 
 ## Patching Workflow
 
+Patches use `perl -pe` regex with `\w+` wildcards for minified identifiers, so version bumps should not require patch changes.
+
 1. **Fetch DMG URL**: `curl -sI https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect | grep location`
 2. **Update hash**: `nix-prefetch-url <url>` then convert to SRI
-3. **Extract index.js**: Build with `-L` to see extraction, or use dev shell
-4. **Find patterns**: `grep -oP '.{0,50}PATTERN.{0,50}' index.js`
-5. **Update patches**: Edit `scripts/patches-3189/*.js`
-6. **Test**: `nix build . && nix run .`
+3. **Update version/hash/URL** in `flake.nix`
+4. **Build**: `nix build .` — if it succeeds, patches are still valid
+5. **If build fails**: Check the `grep -qP` verification errors to see which regex needs updating
 
-See `docs/patching-architecture.md` for the full technical analysis and automation strategy.
+See `docs/patching-architecture.md` for the full technical analysis.
 
-## Patch Chain (v1.1.3189)
+## Patch Chain
 
-| # | File | Target | Purpose |
-|---|------|--------|---------|
-| 00 | native-module-stub | `@ant/claude-native` | Electron API stubs for Linux |
-| 01 | cowork-module-loader | (append) | Load bubblewrap module with process guard |
-| 02 | platform-flag | `Ci=process.platform==="win32"` | Route Linux through TS VM path |
-| 03 | availability-check | `fz()` | Return supported for Linux |
-| 04 | skip-download | `zTe(t,e)` | Skip macOS VM bundle download |
-| 05 | vm-start-intercept | `v_t(t,e,r,n)` | Create bubblewrap session, dispatch Ready |
-| 06 | vm-getter | `Ei()` + `aAe()` | Return Linux VM instance |
-| 07 | platform-branding | mainView.js preload | Replace "for Windows"/"for Mac" with "for Linux" |
-| 08 | tray-icon-linux | `RAt()` + tray ternary | Use theme-aware PNGs instead of Windows ICOs |
+| # | Method | Purpose |
+|---|--------|---------|
+| 00 | File copy | Electron API stubs for Linux (`@ant/claude-native`) |
+| 01 | Append IIFE | Load bubblewrap Cowork module |
+| 02 | `perl -pe` regex | Route Linux through VM path (platform flag) |
+| 03 | `perl -pe` regex | Return "supported" for Linux availability |
+| 04 | `perl -pe` regex | Skip macOS VM bundle download |
+| 05 | Node.js dynamic | Create bubblewrap session at VM start |
+| 06 | `perl -pe` regex | Return Linux VM instance from getters |
+| 07 | Append IIFE | Replace "for Windows"/"for Mac" with "for Linux" |
+| 08 | `perl -pe` regex | Use theme-aware PNGs for tray icon |
+| 09 | `perl -pe` regex | DBus tray cleanup delay for stability |
 
 ## Electron Gotchas
 
