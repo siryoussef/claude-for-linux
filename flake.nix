@@ -49,6 +49,7 @@
               p7zip
               python3
               nodejs
+              perl
             ];
 
             dontUnpack = true;
@@ -128,36 +129,103 @@
                 echo "  WARNING: electron.icns not found, skipping app icon extraction"
               fi
 
-              # Apply patches
+              # Apply patches (version-resilient regex + dynamic discovery)
               echo "[5/6] Applying patches..."
 
-              # Copy source tree for patches that need module files
-              cp -r ${./modules} source-modules
-              chmod -R u+w source-modules
+              INDEX="extracted/.vite/build/index.js"
+              MAINVIEW="extracted/.vite/build/mainView.js"
 
-              # Create a source root structure patches can find
-              mkdir -p source-root/modules
-              cp source-modules/*.js source-root/modules/
+              # --- Patch 00: Native module stub ---
+              echo "[patch:00] Installing native module stub..."
+              mkdir -p extracted/node_modules/@ant/claude-native
+              cp ${./modules/enhanced-claude-native-stub.js} extracted/node_modules/@ant/claude-native/index.js
+              cat > extracted/node_modules/@ant/claude-native/package.json <<STUBPKG
+              {"name":"@ant/claude-native","version":"1.0.0-linux-stub","main":"index.js"}
+              STUBPKG
+              echo "[patch:00] Done"
 
-              # Base: Install native module stub
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/00-native-module-stub.js} extracted source-root
+              # --- Patch 01: Cowork module loader ---
+              echo "[patch:01] Installing cowork module..."
+              mkdir -p extracted/node_modules/claude-cowork-linux
+              cp ${./modules/claude-cowork-linux.js} extracted/node_modules/claude-cowork-linux/index.js
+              cat > extracted/node_modules/claude-cowork-linux/package.json <<COWORKPKG
+              {"name":"claude-cowork-linux","version":"2.0.0","main":"index.js"}
+              COWORKPKG
+              cat ${./scripts/cowork-init.js} >> "$INDEX"
+              echo "[patch:01] Done"
 
-              # Cowork: Install module and apply patches (in order)
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/01-cowork-module-loader.js} extracted source-root
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/02-platform-flag.js} extracted
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/03-availability-check.js} extracted
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/04-skip-download.js} extracted
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/05-vm-start-intercept.js} extracted
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/06-vm-getter.js} extracted
+              # --- Patch 02: Platform flag (regex) ---
+              # Makes the Windows platform flag also true on Linux, routing through TS VM path
+              echo "[patch:02] Patching platform flag..."
+              perl -i -pe 's{(\w+=process\.platform==="darwin",)(\w+)(=process\.platform==="win32")}{$1$2$3||process.platform==="linux"}g' "$INDEX"
+              grep -qP '\w+=process\.platform==="win32"\|\|process\.platform==="linux"' "$INDEX" \
+                || { echo "ERROR: patch 02 (platform flag) failed to apply"; exit 1; }
+              echo "[patch:02] Done"
 
-              # Branding: Replace "for Windows"/"for Mac" with "for Linux" in UI
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/07-platform-branding.js} extracted
+              # --- Patch 03: Availability check (regex) ---
+              # Prepends Linux "supported" return before the platform check
+              echo "[patch:03] Patching availability check..."
+              perl -i -pe 's{(function )(\w+)(\(\)\{)(const t=process\.platform;if\(t!=="darwin"&&t!=="win32"\)return\{status:"unsupported")}{$1$2$3if(process.platform==="linux"\&\&global.__linuxCowork)return\{status:"supported"\};$4}g' "$INDEX"
+              grep -qP 'if\(process\.platform==="linux"&&global\.__linuxCowork\)return\{status:"supported"\}' "$INDEX" \
+                || { echo "ERROR: patch 03 (availability check) failed to apply"; exit 1; }
+              echo "[patch:03] Done"
 
-              # Tray: Use theme-aware PNGs on Linux instead of Windows ICOs
-              ${pkgs.nodejs}/bin/node ${./scripts/patches-3189/08-tray-icon-linux.js} extracted
+              # --- Patch 04: Skip download (regex) ---
+              # Skips macOS VM bundle download on Linux
+              echo "[patch:04] Patching download skip..."
+              perl -i -pe 's{(async function \w+\(t,e\)\{)(.{0,200}?\[downloadVM\])}{$1if(process.platform==="linux"\&\&global.__linuxCowork){console.log("[Cowork Linux] Skipping bundle download");return!1}$2}g' "$INDEX"
+              grep -qP 'async function \w+\(t,e\)\{if\(process\.platform==="linux"' "$INDEX" \
+                || { echo "ERROR: patch 04 (skip download) failed to apply"; exit 1; }
+              echo "[patch:04] Done"
 
-              # Clean up backup files before repacking
-              find extracted -name "*.backup" -o -name "*-backup" | xargs rm -f 2>/dev/null || true
+              # --- Patch 05: VM start intercept (dynamic Node.js) ---
+              # Discovers function name via [VM:start] log string, injects bubblewrap session
+              echo "[patch:05] Patching VM start intercept..."
+              ${pkgs.nodejs}/bin/node ${./scripts/patch-vm-start.js} extracted
+              echo "[patch:05] Done"
+
+              # --- Patch 06a: VM getter (regex) ---
+              # Returns Linux VM instance from getter function
+              echo "[patch:06a] Patching VM getter..."
+              perl -i -pe 's{(async function )(\w+)(\(\)\{)(const \w+=await \w+\(\);return\(\w+==null\?void 0:\w+\.vm\)\?\?null)}{$1$2$3if(process.platform==="linux"\&\&global.__linuxCowork\&\&global.__linuxCowork.vmInstance){console.log("[Cowork Linux] $2() returning Linux VM");return global.__linuxCowork.vmInstance}$4}g' "$INDEX"
+              grep -qP '\[Cowork Linux\] \w+\(\) returning Linux VM' "$INDEX" \
+                || { echo "ERROR: patch 06a (VM getter) failed to apply"; exit 1; }
+              echo "[patch:06a] Done"
+
+              # --- Patch 06b: Platform getter (regex) ---
+              # Don't return null for Linux in platform-gated getter
+              echo "[patch:06b] Patching platform getter..."
+              perl -i -pe 's{(async function \w+\(\)\{return )process\.platform!=="darwin"\?null(:await \w+\(\))}{''${1}process.platform!=="darwin"\&\&process.platform!=="linux"?null''${2}}g' "$INDEX"
+              grep -qP 'process\.platform!=="darwin"&&process\.platform!=="linux"\?null' "$INDEX" \
+                || { echo "ERROR: patch 06b (platform getter) failed to apply"; exit 1; }
+              echo "[patch:06b] Done"
+
+              # --- Patch 07: Platform branding ---
+              echo "[patch:07] Injecting platform branding fix..."
+              cat ${./scripts/branding-fix.js} >> "$MAINVIEW"
+              echo "[patch:07] Done"
+
+              # --- Patch 08a: Tray icon resource path (regex) ---
+              # Returns real filesystem path on Linux (COSMIC SNI can't read from ASAR)
+              echo "[patch:08a] Patching tray icon resource path..."
+              perl -i -pe 's{function (\w+)\(\)\{return (\w+)\.app\.isPackaged\?(\w+)\.resourcesPath:(\w+)\.resolve\(__dirname,"\.\.","\.\.","resources"\)\}}{function $1(){return process.platform==="linux"?$4.join($4.dirname($2.app.getAppPath()),"resources"):$2.app.isPackaged?$3.resourcesPath:$4.resolve(__dirname,"..","..","resources")}}g' "$INDEX"
+              grep -qP 'process\.platform==="linux"\?\w+\.join\(\w+\.dirname\(' "$INDEX" \
+                || { echo "ERROR: patch 08a (tray icon path) failed to apply"; exit 1; }
+              echo "[patch:08a] Done"
+
+              # --- Patch 08b: Tray icon filename (regex) ---
+              # Linux uses theme-aware PNGs instead of Windows ICOs
+              echo "[patch:08b] Patching tray icon filename selection..."
+              perl -i -pe 's{(\w+)\?(\w+)=(\w+)\.nativeTheme\.shouldUseDarkColors\?"Tray-Win32-Dark\.ico":"Tray-Win32\.ico":(\w+)="TrayIconTemplate\.png"}{process.platform==="linux"?($2=$3.nativeTheme.shouldUseDarkColors?"TrayIconTemplate-Dark.png":"TrayIconTemplate.png"):$1?$2=$3.nativeTheme.shouldUseDarkColors?"Tray-Win32-Dark.ico":"Tray-Win32.ico":$4="TrayIconTemplate.png"}g' "$INDEX"
+              grep -qP 'process\.platform==="linux"\?\(' "$INDEX" \
+                || { echo "ERROR: patch 08b (tray icon filename) failed to apply"; exit 1; }
+              echo "[patch:08b] Done"
+
+              # --- Patch 09: DBus tray cleanup delay (regex) ---
+              # Prevents StatusNotifierItem registration race on Linux
+              echo "[patch:09] Patching tray DBus cleanup delay..."
+              perl -i -pe 's{(\w+)&&\(\1\.destroy\(\),\1=null\)}{$1&&($1.destroy(),$1=null,await new Promise(r=>setTimeout(r,250)))}g' "$INDEX"
+              echo "[patch:09] Done"
 
               # Repack ASAR
               echo "[6/6] Repacking ASAR..."
