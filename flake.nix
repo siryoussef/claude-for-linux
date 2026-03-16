@@ -2,29 +2,32 @@
   description = "Claude Desktop for Linux - fully declarative NixOS package with Cowork support";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    let
-      # Claude Desktop version and source
-      claudeVersion = "1.1.3770";
-      claudeDmgHash = "sha256-dx+lYjSYN1vRMKGQdNYFJwxZAwfyoLjxlJUKd29c6+Y=";
-      claudeDmgUrl = "https://downloads.claude.ai/releases/darwin/universal/${claudeVersion}/Claude-f7f5859a17386e383fad75f35ff6dd0f6e9dfd66.dmg";
+  outputs = {
+    self,
+    flake-utils,
+    # pkgs,
+    ...
+  }: let
+    # Claude Desktop version and source
+    claudeVersion = "1.1.3770";
+    claudeDmgHash = "sha256-dx+lYjSYN1vRMKGQdNYFJwxZAwfyoLjxlJUKd29c6+Y=";
+    claudeDmgUrl = "https://downloads.claude.ai/releases/darwin/universal/${claudeVersion}/Claude-f7f5859a17386e383fad75f35ff6dd0f6e9dfd66.dmg";
 
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
+    supportedSystems = ["x86_64-linux" "aarch64-linux"];
 
-      forEachSystem = f: builtins.listToAttrs (map (system: {
-        name = system;
-        value = f system;
-      }) supportedSystems);
-
-    in {
-      packages = forEachSystem (system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-
+    forEachSystem = f:
+      builtins.listToAttrs (map (system: {
+          name = system;
+          value = f system;
+        })
+        supportedSystems);
+  in {
+    packages = {pkgs, ...}:
+      forEachSystem (
+        system: let
           # Fetch macOS DMG
           claudeSrc = pkgs.fetchurl {
             url = claudeDmgUrl;
@@ -205,21 +208,12 @@
               cat ${./scripts/branding-fix.js} >> "$MAINVIEW"
               echo "[patch:07] Done"
 
-              # --- Patch 08a: Tray icon resource path (regex) ---
+              # --- Patch 08: Tray icon Linux (dynamic Node.js script) ---
               # Returns real filesystem path on Linux (COSMIC SNI can't read from ASAR)
-              echo "[patch:08a] Patching tray icon resource path..."
-              perl -i -pe 's{function (\w+)\(\)\{return (\w+)\.app\.isPackaged\?(\w+)\.resourcesPath:(\w+)\.resolve\(__dirname,"\.\.","\.\.","resources"\)\}}{function $1(){return process.platform==="linux"?$4.join($4.dirname($2.app.getAppPath()),"resources"):$2.app.isPackaged?$3.resourcesPath:$4.resolve(__dirname,"..","..","resources")}}g' "$INDEX"
-              grep -qP 'process\.platform==="linux"\?\w+\.join\(\w+\.dirname\(' "$INDEX" \
-                || { echo "ERROR: patch 08a (tray icon path) failed to apply"; exit 1; }
-              echo "[patch:08a] Done"
-
-              # --- Patch 08b: Tray icon filename (regex) ---
-              # Linux uses theme-aware PNGs instead of Windows ICOs
-              echo "[patch:08b] Patching tray icon filename selection..."
-              perl -i -pe 's{(\w+)\?(\w+)=(\w+)\.nativeTheme\.shouldUseDarkColors\?"Tray-Win32-Dark\.ico":"Tray-Win32\.ico":(\w+)="TrayIconTemplate\.png"}{process.platform==="linux"?($2=$3.nativeTheme.shouldUseDarkColors?"TrayIconTemplate-Dark.png":"TrayIconTemplate.png"):$1?$2=$3.nativeTheme.shouldUseDarkColors?"Tray-Win32-Dark.ico":"Tray-Win32.ico":$4="TrayIconTemplate.png"}g' "$INDEX"
-              grep -qP 'process\.platform==="linux"\?\(' "$INDEX" \
-                || { echo "ERROR: patch 08b (tray icon filename) failed to apply"; exit 1; }
-              echo "[patch:08b] Done"
+              # and uses theme-aware PNG icons instead of Windows ICOs
+              echo "[patch:08] Patching tray icons for Linux..."
+              ${pkgs.nodejs}/bin/node ${./scripts/patch-tray-icons.js} extracted
+              echo "[patch:08] Done"
 
               # --- Patch 09: DBus tray cleanup delay (regex) ---
               # Prevents StatusNotifierItem registration race on Linux
@@ -277,8 +271,8 @@
           # Basic Claude Desktop wrapper (direct electron)
           claudeDesktop = pkgs.symlinkJoin {
             name = "claude-desktop-${claudeVersion}";
-            paths = [ claudeApp ];
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            paths = [claudeApp];
+            nativeBuildInputs = [pkgs.makeWrapper];
             postBuild = ''
               mkdir -p $out/bin
               makeWrapper ${pkgs.electron_37}/bin/electron $out/bin/claude-desktop \
@@ -286,7 +280,7 @@
                 --add-flags "--no-sandbox" \
                 --add-flags "--ozone-platform-hint=auto" \
                 --add-flags "--class=Claude" \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bubblewrap ]} \
+                --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.bubblewrap]} \
                 --set BWRAP_PATH "${pkgs.bubblewrap}/bin/bwrap" \
                 --set CHROME_DESKTOP "claude-desktop.desktop" \
                 --prefix XDG_DATA_DIRS : "$out/share"
@@ -317,23 +311,24 @@
           # FHS wrapper for maximum compatibility (cowork + MCP)
           claudeDesktopFHS = pkgs.buildFHSEnv {
             name = "claude-desktop";
-            targetPkgs = pkgs: with pkgs; [
-              bubblewrap
-              nodejs
-              python3
-              glibc
-              openssl
-              docker-client
-              coreutils
-              bash
-              gnugrep
-              gnused
-              gawk
-              findutils
-              git
-              curl
-              wget
-            ];
+            targetPkgs = pkgs:
+              with pkgs; [
+                bubblewrap
+                nodejs
+                python3
+                glibc
+                openssl
+                docker-client
+                coreutils
+                bash
+                gnugrep
+                gnused
+                gawk
+                findutils
+                git
+                curl
+                wget
+              ];
             runScript = "${claudeDesktop}/bin/claude-desktop";
             meta = with pkgs.lib; {
               description = "Claude Desktop for Linux (FHS) with Cowork and MCP support";
@@ -342,7 +337,6 @@
               mainProgram = "claude-desktop";
             };
           };
-
         in {
           default = claudeDesktop;
           claude-desktop = claudeDesktop;
@@ -352,107 +346,122 @@
         }
       );
 
-      apps = forEachSystem (system: {
+    apps = {pkgs, ...}: let
+      packages = self.packages {inherit pkgs;};
+    in
+      forEachSystem (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/claude-desktop";
+          program = "${packages.${system}.default}/bin/claude-desktop";
         };
         claude-desktop = {
           type = "app";
-          program = "${self.packages.${system}.claude-desktop}/bin/claude-desktop";
+          program = "${packages.${system}.claude-desktop}/bin/claude-desktop";
         };
         claude-desktop-fhs = {
           type = "app";
-          program = "${self.packages.${system}.claude-desktop-fhs}/bin/claude-desktop";
+          program = "${packages.${system}.claude-desktop-fhs}/bin/claude-desktop";
         };
       });
 
-      # NixOS module
-      nixosModules.default = { config, lib, pkgs, ... }:
-        let
-          cfg = config.programs.claude-desktop;
-        in {
-          options.programs.claude-desktop = {
-            enable = lib.mkEnableOption "Claude Desktop with Cowork support";
+    # NixOS module
+    nixosModules.default = {
+      config,
+      lib,
+      pkgs,
+      ...
+    }: let
+      cfg = config.programs.claude-desktop;
+      packages = self.packages {inherit pkgs;};
+    in {
+      options.programs.claude-desktop = {
+        enable = lib.mkEnableOption "Claude Desktop with Cowork support";
 
-            package = lib.mkOption {
-              type = lib.types.package;
-              default = self.packages.${pkgs.system}.claude-desktop;
-              defaultText = lib.literalExpression "claude-for-linux.packages.\${system}.claude-desktop";
-              description = "The Claude Desktop package to use.";
-            };
-
-            fhs = lib.mkOption {
-              type = lib.types.bool;
-              default = true;
-              description = "Use FHS wrapper for better MCP and Cowork compatibility.";
-            };
-          };
-
-          config = lib.mkIf cfg.enable {
-            environment.systemPackages = [
-              (if cfg.fhs
-               then self.packages.${pkgs.system}.claude-desktop-fhs
-               else cfg.package)
-              pkgs.bubblewrap
-            ];
-          };
+        package = lib.mkOption {
+          type = lib.types.package;
+          default = packages.${pkgs.system}.claude-desktop;
+          defaultText = lib.literalExpression "claude-for-linux.packages.\${system}.claude-desktop";
+          description = "The Claude Desktop package to use.";
         };
 
-      # Home Manager module
-      homeManagerModules.default = { config, lib, pkgs, ... }:
-        let
-          cfg = config.programs.claude-desktop;
-          pkg = if cfg.fhs
-                then self.packages.${pkgs.system}.claude-desktop-fhs
-                else cfg.package;
-        in {
-          options.programs.claude-desktop = {
-            enable = lib.mkEnableOption "Claude Desktop with Cowork support";
+        fhs = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Use FHS wrapper for better MCP and Cowork compatibility.";
+        };
+      };
 
-            package = lib.mkOption {
-              type = lib.types.package;
-              default = self.packages.${pkgs.system}.claude-desktop;
-              defaultText = lib.literalExpression "claude-for-linux.packages.\${system}.claude-desktop";
-              description = "The Claude Desktop package to use.";
-            };
+      config = lib.mkIf cfg.enable {
+        environment.systemPackages = [
+          (
+            if cfg.fhs
+            then packages.${pkgs.system}.claude-desktop-fhs
+            else cfg.package
+          )
+          pkgs.bubblewrap
+        ];
+      };
+    };
 
-            fhs = lib.mkOption {
-              type = lib.types.bool;
-              default = true;
-              description = "Use FHS wrapper for better MCP and Cowork compatibility.";
-            };
+    # Home Manager module
+    homeManagerModules.default = {
+      config,
+      lib,
+      pkgs,
+      ...
+    }: let
+      cfg = config.programs.claude-desktop;
+      packages = self.packages {inherit pkgs;};
+      pkg =
+        if cfg.fhs
+        then packages.${pkgs.system}.claude-desktop-fhs
+        else cfg.package;
+    in {
+      options.programs.claude-desktop = {
+        enable = lib.mkEnableOption "Claude Desktop with Cowork support";
 
-            createDesktopEntry = lib.mkOption {
-              type = lib.types.bool;
-              default = true;
-              description = "Create desktop entry for Claude Desktop.";
-            };
-          };
-
-          config = lib.mkIf cfg.enable {
-            home.packages = [ pkg pkgs.bubblewrap ];
-
-            xdg.desktopEntries.claude-desktop = lib.mkIf cfg.createDesktopEntry {
-              name = "Claude";
-              genericName = "AI Assistant";
-              exec = "${pkg}/bin/claude-desktop %U";
-              icon = "claude";
-              categories = [ "Development" "Utility" ];
-              comment = "Claude Desktop with Linux Cowork support";
-              mimeType = [ "x-scheme-handler/claude" ];
-              settings = {
-                StartupWMClass = "Claude";
-              };
-            };
-          };
+        package = lib.mkOption {
+          type = lib.types.package;
+          default = packages.${pkgs.system}.claude-desktop;
+          defaultText = lib.literalExpression "claude-for-linux.packages.\${system}.claude-desktop";
+          description = "The Claude Desktop package to use.";
         };
 
-      # Development shell
-      devShells = forEachSystem (system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in {
+        fhs = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Use FHS wrapper for better MCP and Cowork compatibility.";
+        };
+
+        createDesktopEntry = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = "Create desktop entry for Claude Desktop.";
+        };
+      };
+
+      config = lib.mkIf cfg.enable {
+        home.packages = [pkg pkgs.bubblewrap];
+
+        xdg.desktopEntries.claude-desktop = lib.mkIf cfg.createDesktopEntry {
+          name = "Claude";
+          genericName = "AI Assistant";
+          exec = "${pkg}/bin/claude-desktop %U";
+          icon = "claude";
+          categories = ["Development" "Utility"];
+          comment = "Claude Desktop with Linux Cowork support";
+          mimeType = ["x-scheme-handler/claude"];
+          settings = {
+            StartupWMClass = "Claude";
+          };
+        };
+      };
+    };
+
+    # Development shell
+    devShells = {pkgs, ...}:
+      forEachSystem (
+        system: {
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
               nodejs
@@ -481,5 +490,5 @@
           };
         }
       );
-    };
+  };
 }

@@ -38,3 +38,4 @@ electron-linux/
 scratch/
 .claude/
 result
+debug_extract/

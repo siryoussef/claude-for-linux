@@ -52,7 +52,7 @@ See `docs/patching-architecture.md` for the full technical analysis.
 | 05 | Node.js dynamic | Create bubblewrap session at VM start |
 | 06 | `perl -pe` regex | Return Linux VM instance from getters |
 | 07 | Append IIFE | Replace "for Windows"/"for Mac" with "for Linux" |
-| 08 | `perl -pe` regex | Use theme-aware PNGs for tray icon |
+| 08 | Node.js dynamic | Use theme-aware PNGs for tray icon + filesystem path |
 | 09 | `perl -pe` regex | DBus tray cleanup delay for stability |
 
 ## Electron Gotchas

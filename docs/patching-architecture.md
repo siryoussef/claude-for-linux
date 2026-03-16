@@ -44,9 +44,9 @@ indexContent = indexContent.replace(original, replacement);
 | 05 | VM start intercept | `async function NAME(t,e,r,n){...` → prepend Linux bubblewrap session | **Yes** — function name + ~6 internal refs |
 | 06 | VM getter override | Two small functions → prepend Linux VM return | **Yes** — function names + inner call |
 | 07 | Platform branding | `mainView.js` preload injection | No |
-| 08 | Tray icon fix | Resource path function + icon filename selection | **Yes** — function name + module aliases |
+| 08 | Tray icon fix | Resource path function + icon filename selection | **No** — dynamic discovery (see below) |
 
-**6 of 9 patches are identifier-dependent** and break on every release.
+**5 of 9 patches are identifier-dependent** and break on every release. Patch 08 uses dynamic discovery to be version-resilient.
 
 ### Update History
 
@@ -118,7 +118,51 @@ grep -oP 'async function \w+\(\)\{const t=await \w+\(\);return\(t==null\?void 0:
 
 # Patch 06b: Platform getter — returns null for non-darwin
 grep -oP 'async function \w+\(\)\{return process\.platform!=="darwin"\?null:await \w+\(\)\}' $INDEX
+```
 
+## Dynamic Patching (Version-Resilient)
+
+Starting with version 1.1.3770, patches 05 and 08 use **dynamic discovery** via Node.js scripts that find code patterns at build time rather than relying on hardcoded identifiers.
+
+### Patch 05: VM Start Intercept (`scripts/patch-vm-start.js`)
+
+Discovers the VM start function by its semantic signature (the `[VM:start]` log string):
+
+```bash
+node scripts/patch-vm-start.js extracted/
+```
+
+The script:
+1. Searches for `async function WORD(...){...[VM:start]...}` pattern
+2. Extracts the function name and parameter names
+3. Injects the bubblewrap session logic before the original function body
+4. Verifies the injection was successful
+
+### Patch 08: Tray Icon Linux (`scripts/patch-tray-icons.js`)
+
+Discovers and patches two patterns:
+
+```bash
+node scripts/patch-tray-icons.js extracted/
+```
+
+**Part A - Resource path function:**
+- Pattern: `function X(){return Y.app.isPackaged?Z.resourcesPath:Y.resolve(__dirname,"..","..","resources")}`
+- Uses relaxed regex with `\w+` wildcards to match any identifier names
+- Replaces with Linux-aware path resolution
+
+**Part B - Icon filename selection:**
+- Pattern: `X?e=Y.nativeTheme.shouldUseDarkColors?"...ico":"...ico":e="TrayIconTemplate.png"`
+- Matches the ternary structure regardless of variable names
+- Prepends Linux check to use PNG icons instead of Windows ICOs
+
+Both patches verify their changes before completing and exit with error if patterns aren't found.
+
+### Old Grep Patterns (for reference)
+
+These patterns were used before dynamic patching was implemented:
+
+```bash
 # Patch 08a: Resource path — returns resourcesPath or __dirname resolve
 grep -oP 'function \w+\(\)\{return \w+\.app\.isPackaged\?\w+\.resourcesPath:\w+\.resolve\(__dirname,"\.\.","\.\.","resources"\)\}' $INDEX
 
